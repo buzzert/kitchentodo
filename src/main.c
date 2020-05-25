@@ -13,6 +13,7 @@ typedef struct _todo_item_t {
 } todo_item_t;
 
 typedef struct _app_state_t {
+    Widget      root_widget;
     Widget      list_widget;
 
     Widget      list_toggle_widgets[MAX_TODOS];
@@ -61,6 +62,7 @@ int main (int argc, char *argv[])
     );
 
     Widget root = XtVaCreateManagedWidget ("main_window", xmMainWindowWidgetClass, toplevel, NULL);
+    g_app_state.root_widget = root;
 
     Widget menubar = XmVaCreateSimpleMenuBar (root, "menubar",
         XmVaCASCADEBUTTON, XmStringCreateSimple("File"), 'F',
@@ -68,9 +70,10 @@ int main (int argc, char *argv[])
     );
 
     XmVaCreateSimplePulldownMenu (menubar, "file_menu", 0, file_menu_callback,
-        XmVaPUSHBUTTON, XmStringCreateSimple("Quit"), 'Q', NULL, NULL,
-        NULL
-    );
+                                  XmVaPUSHBUTTON, XmStringCreateSimple ("Add Item..."), 'A', NULL, NULL,
+                                  XmVaSEPARATOR,
+                                  XmVaPUSHBUTTON, XmStringCreateSimple("Quit"), 'Q', NULL, NULL,
+                                  NULL);
 
     XtManageChild (menubar);
 
@@ -126,6 +129,8 @@ void file_menu_callback(Widget w, XtPointer client_data, XtPointer call_data)
 
     int selected_item = (int)client_data;
     if (selected_item == 0) {
+        add_menu_callback (w, client_data, call_data);
+    } else {
         // Quit
         exit (0);
     }
@@ -136,7 +141,7 @@ void add_menu_callback (Widget w, XtPointer client_data, XtPointer call_data)
     Arg args[] = {
         { XmNselectionLabelString, XmStringCreateSimple ("Item Name:") }
     };
-    Widget dialog = XmCreatePromptDialog (w, "Add Item", args, 1);
+    Widget dialog = XmCreatePromptDialog (g_app_state.root_widget, "Add Item", args, 1);
 
     // Done callback
     XtAddCallback (dialog, XmNokCallback, add_menu_completion, w);
