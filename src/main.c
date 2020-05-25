@@ -31,6 +31,8 @@ typedef struct _app_state_t {
 static app_state_t g_app_state = { 0 };
 
 void add_todo (todo_item_t item);
+void clear_completed (void);
+
 void file_menu_callback (Widget w, XtPointer client, XtPointer call);
 void add_menu_callback (Widget w, XtPointer client_data, XtPointer call_data);
 void add_menu_completion (Widget w, XtPointer client_data, XtPointer call_data);
@@ -99,10 +101,15 @@ int parse_todo_item_at_path (const char *path, todo_item_t *item_out)
     return 0;
 }
 
+void todo_item_get_path (todo_item_t item, char *out_path, size_t out_path_len)
+{
+    snprintf (out_path, out_path_len, "%s/%lu", g_app_state.store_path, item.id);
+}
+
 int write_todo_item_to_store (todo_item_t item)
 {
     char filename[MAX_PATH_LEN];
-    snprintf (filename, MAX_PATH_LEN, "%s/%lu", g_app_state.store_path, item.id);
+    todo_item_get_path (item, filename, MAX_PATH_LEN);
 
     FILE *fp = fopen (filename, "w");
     if (!fp) {
@@ -151,7 +158,8 @@ void reload_data_for_list (Widget list)
 
 void add_todo (todo_item_t item)
 {
-    g_app_state.todo_items[g_app_state.num_todo_items++] = item;
+    unsigned int index = g_app_state.num_todo_items++;
+    g_app_state.todo_items[index] = item;
 
     XmString label_string = XmStringCreateSimple (item.label_string);
     Widget item_widget = XmVaCreateToggleButton (g_app_state.list_widget, "item",
@@ -162,6 +170,24 @@ void add_todo (todo_item_t item)
     XtAddCallback (item_widget, XmNvalueChangedCallback, toggle_item_callback, NULL);
     XtManageChild (item_widget);
     XmStringFree (label_string);
+
+    g_app_state.list_toggle_widgets[index] = item_widget;
+}
+
+void clear_completed ()
+{
+    char filepath[MAX_PATH_LEN];
+    for (unsigned int i = 0; i < g_app_state.num_todo_items; i++) {
+        todo_item_t item = g_app_state.todo_items[i];
+        if (item.complete) {
+            XtUnmanageChild (g_app_state.list_toggle_widgets[i]);
+            g_app_state.list_toggle_widgets[i] = NULL;
+
+            // Delete file in store
+            todo_item_get_path (item, filepath, MAX_PATH_LEN);
+            unlink (filepath);
+        }
+    }
 }
 
 int main (int argc, char *argv[])
@@ -186,10 +212,11 @@ int main (int argc, char *argv[])
     );
 
     XmVaCreateSimplePulldownMenu (menubar, "file_menu", 0, file_menu_callback,
-                                  XmVaPUSHBUTTON, XmStringCreateSimple ("Add Item..."), 'A', NULL, NULL,
-                                  XmVaSEPARATOR,
-                                  XmVaPUSHBUTTON, XmStringCreateSimple("Quit"), 'Q', NULL, NULL,
-                                  NULL);
+        XmVaPUSHBUTTON, XmStringCreateSimple ("Add Item..."), 'A', "Ctrl<Key>N", XmStringCreateSimple ("Ctrl+N"),
+        XmVaPUSHBUTTON, XmStringCreateSimple ("Clear Completed"), 'C', "Ctrl<Key>X", XmStringCreateSimple ("Ctrl+X"),
+        XmVaSEPARATOR,
+        XmVaPUSHBUTTON, XmStringCreateSimple ("Quit"), 'Q', "Ctrl<Key>Q", XmStringCreateSimple ("Ctrl+Q"),
+        NULL);
 
     XtManageChild (menubar);
 
@@ -246,6 +273,8 @@ void file_menu_callback(Widget w, XtPointer client_data, XtPointer call_data)
     int selected_item = (int)client_data;
     if (selected_item == 0) {
         add_menu_callback (w, client_data, call_data);
+    } else if (selected_item == 1) {
+        clear_completed ();
     } else {
         // Quit
         exit (0);
