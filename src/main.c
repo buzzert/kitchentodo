@@ -98,6 +98,7 @@ int parse_todo_item_at_path (const char *path, todo_item_t *item_out)
         }
     }
 
+    fclose (fp);
     return 0;
 }
 
@@ -194,8 +195,8 @@ int main (int argc, char *argv[])
 {
     initialize_store_if_necessary ();
 
+    /* Initialize Application */
     XtAppContext app;
-
     Widget toplevel = XtVaOpenApplication (&app, "Shopping List", NULL, 0, &argc, argv, NULL,
         sessionShellWidgetClass,
         XmNminWidth, 275,
@@ -203,14 +204,17 @@ int main (int argc, char *argv[])
         NULL
     );
 
+    /* Create root widget */
     Widget root = XtVaCreateManagedWidget ("main_window", xmMainWindowWidgetClass, toplevel, NULL);
     g_app_state.root_widget = root;
 
+    /* Menu bar */
     Widget menubar = XmVaCreateSimpleMenuBar (root, "menubar",
         XmVaCASCADEBUTTON, XmStringCreateSimple("File"), 'F',
         NULL
     );
 
+    /* File menu */
     XmVaCreateSimplePulldownMenu (menubar, "file_menu", 0, file_menu_callback,
         XmVaPUSHBUTTON, XmStringCreateSimple ("Add Item..."), 'A', "Ctrl<Key>N", XmStringCreateSimple ("Ctrl+N"),
         XmVaPUSHBUTTON, XmStringCreateSimple ("Clear Completed"), 'C', "Ctrl<Key>X", XmStringCreateSimple ("Ctrl+X"),
@@ -227,6 +231,8 @@ int main (int argc, char *argv[])
 
 
     /* Add Button */
+    /* Important to make sure this button is managed before the list scroll, so the list scroll can */
+    /* reference the add button as its "bottom widget". */
     Widget add_button = XmVaCreatePushButton (main_form, "add_button",
                                               XmNlabelString, XmStringCreateSimple ("+ Add Item"),
                                               XmNleftAttachment, XmATTACH_FORM,
@@ -248,16 +254,13 @@ int main (int argc, char *argv[])
     XtManageChild (list_scroll);
 
     Widget list = XmVaCreateRowColumn (list_scroll, "list",
-        XmCNumColumns, 1,
-        XmCIsHomogeneous, true,
-        XmCEntryClass, xmToggleButtonWidgetClass,
-
-        NULL
-    );
+                                       XmCNumColumns, 1,
+                                       XmCIsHomogeneous, true,
+                                       XmCEntryClass, xmToggleButtonWidgetClass,
+                                       NULL);
     XtManageChild (list);
     g_app_state.list_widget = list;
     reload_data_for_list (list);
-
 
     XtRealizeWidget (toplevel);
     XtAppMainLoop (app);
@@ -270,7 +273,7 @@ void file_menu_callback(Widget w, XtPointer client_data, XtPointer call_data)
     (void) w;
     (void) call_data;
 
-    int selected_item = (int)client_data;
+    int selected_item = (int) client_data;
     if (selected_item == 0) {
         add_menu_callback (w, client_data, call_data);
     } else if (selected_item == 1) {
