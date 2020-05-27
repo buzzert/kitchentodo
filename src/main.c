@@ -273,7 +273,7 @@ void file_menu_callback(Widget w, XtPointer client_data, XtPointer call_data)
     (void) w;
     (void) call_data;
 
-    int selected_item = (int) client_data;
+    unsigned long selected_item = (unsigned long) client_data;
     if (selected_item == 0) {
         add_menu_callback (w, client_data, call_data);
     } else if (selected_item == 1) {
@@ -286,8 +286,9 @@ void file_menu_callback(Widget w, XtPointer client_data, XtPointer call_data)
 
 void add_menu_callback (Widget w, XtPointer client_data, XtPointer call_data)
 {
+    XmString selection_label_str = XmStringCreateSimple ("Item Name:");
     Arg args[] = {
-        { XmNselectionLabelString, XmStringCreateSimple ("Item Name:") }
+        { XmNselectionLabelString, (XtArgVal) selection_label_str }
     };
     Widget dialog = XmCreatePromptDialog (g_app_state.root_widget, "Add Item", args, 1);
 
@@ -299,6 +300,7 @@ void add_menu_callback (Widget w, XtPointer client_data, XtPointer call_data)
 
     XtManageChild (dialog);
     XtPopup (XtParent (dialog), XtGrabNone);
+    XmStringFree (selection_label_str);
 }
 
 void add_menu_completion (Widget w, XtPointer client_data, XtPointer call_data)
