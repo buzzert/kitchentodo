@@ -1,4 +1,5 @@
 #include <dirent.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -157,6 +158,8 @@ void reload_data_for_list (Widget list)
             add_todo (item);
         }
     }
+
+    closedir (store);
 }
 
 void add_todo (todo_item_t item)
@@ -179,7 +182,10 @@ void add_todo (todo_item_t item)
 
 void clear_completed ()
 {
+    static const unsigned long ID_SENTINEL = ULONG_MAX;
+
     char filepath[MAX_PATH_LEN];
+    unsigned int num_removed = 0;
     for (unsigned int i = 0; i < g_app_state.num_todo_items; i++) {
         todo_item_t item = g_app_state.todo_items[i];
         if (item.complete) {
@@ -189,6 +195,25 @@ void clear_completed ()
             // Delete file in store
             todo_item_get_path (item, filepath, MAX_PATH_LEN);
             unlink (filepath);
+            
+            // Remove item
+            num_removed++;
+            g_app_state.todo_items[i].id = ID_SENTINEL; // queue for deletion below
+            free (item.label_string);
+        }
+    }
+
+    // Close holes
+    // Not very efficient... would be better off with a doubly-linked list here. 
+    for (unsigned i = 0; i < g_app_state.num_todo_items; i++) {
+        if (g_app_state.todo_items[i].id == ID_SENTINEL) {
+            for (unsigned repl = i; repl < g_app_state.num_todo_items; repl++) {
+                g_app_state.todo_items[repl] = g_app_state.todo_items[repl + 1];
+                g_app_state.list_toggle_widgets[repl] = g_app_state.list_toggle_widgets[repl + 1];
+            }
+
+            g_app_state.num_todo_items--;
+            i--;
         }
     }
 }
