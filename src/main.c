@@ -30,9 +30,11 @@ typedef struct _app_state_t {
 
 static app_state_t g_app_state = { 0 };
 
+// Action prototypes
 void add_todo (todo_item_t item);
 void clear_completed (void);
 
+// Callbacks
 void file_menu_callback (Widget w, XtPointer client, XtPointer call);
 void add_menu_callback (Widget w, XtPointer client_data, XtPointer call_data);
 void add_menu_completion (Widget w, XtPointer client_data, XtPointer call_data);
@@ -312,14 +314,17 @@ void add_menu_completion (Widget w, XtPointer client_data, XtPointer call_data)
                                              XmCHARSET_TEXT,
                                              XmCHARSET_TEXT,
                                              NULL, 0, XmOUTPUT_ALL);
-    g_app_state.last_item_id++;
-    todo_item_t item = {
-        .complete = false,
-        .label_string = item_string,
-        .id = g_app_state.last_item_id,
-    };
-    add_todo (item);
-    write_todo_item_to_store (item);
+
+    if (strlen (item_string) > 0) {
+        g_app_state.last_item_id++;
+        todo_item_t item = {
+            .complete = false,
+            .label_string = item_string,
+            .id = g_app_state.last_item_id,
+        };
+        add_todo (item);
+        write_todo_item_to_store (item);
+    }
 }
 
 void toggle_item_callback (Widget w, XtPointer client_data, XtPointer call_data)
