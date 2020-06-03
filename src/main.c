@@ -13,6 +13,8 @@
 #define MAX_LISTS 16
 #define MAX_PATH_LEN 512
 
+#define __unused __attribute__ ((unused))
+
 typedef struct _todo_item_t {
     bool          complete;
     char         *label_string;
@@ -21,11 +23,9 @@ typedef struct _todo_item_t {
 
 typedef struct _todo_list_t {
     XmString      list_name;
-    Widget        form_widget;
     Widget        list_widget;
     Widget        tab_button;
 
-    char          store_path[MAX_PATH_LEN];
     unsigned long last_item_id;
 
     unsigned long id;
@@ -41,11 +41,30 @@ typedef struct _app_state_t {
     char          store_path[MAX_PATH_LEN];
     todo_list_t   todo_lists[MAX_LISTS];
     unsigned      num_todo_lists;
+    unsigned long last_todo_list_id;
 
     todo_list_t  *selected_list;
 } app_state_t;
 
 static app_state_t g_app_state = { 0 };
+
+// File menu
+enum {
+    FILE_MENU_ADD_ITEM,
+    FILE_MENU_CLEAR_COMPLETED,
+    FILE_MENU_QUIT,
+
+    FILE_MENU_NUM_ITEMS
+};
+
+// Lists menu
+enum {
+    LISTS_MENU_CREATE_LIST,
+    LISTS_MENU_DELETE_LIST,
+    LISTS_MENU_RENAME_LIST,
+
+    LISTS_MENU_NUM_ITEMS
+};
 
 // Action prototypes
 void add_todo (todo_list_t *list, todo_item_t item);
@@ -55,11 +74,17 @@ void add_todo_list (todo_list_t list);
 void reload_todo_lists (void);
 
 // Callbacks
-void file_menu_callback (Widget w, XtPointer client, XtPointer call);
-void add_menu_callback (Widget w, XtPointer client_data, XtPointer call_data);
-void add_menu_completion (Widget w, XtPointer client_data, XtPointer call_data);
-void toggle_item_callback (Widget w, XtPointer client_data, XtPointer call_data);
-void notebook_page_changed_callback (Widget w, XtPointer client_data, XtPointer call_data);
+void file_menu_callback (Widget, XtPointer, XtPointer);
+void add_menu_callback (Widget, XtPointer, XtPointer);
+void add_menu_completion (Widget, XtPointer, XtPointer);
+void toggle_item_callback (Widget, XtPointer, XtPointer);
+void notebook_page_changed_callback (Widget, XtPointer, XtPointer);
+
+void list_menu_callback (Widget, XtPointer, XtPointer);
+void add_list_callback (Widget, XtPointer, XtPointer);
+void add_list_completion (Widget, XtPointer, XtPointer);
+void delete_list_completion (Widget, XtPointer, XtPointer);
+void rename_list_completion (Widget, XtPointer, XtPointer);
 
 void initialize_store_if_necessary ()
 {
@@ -125,11 +150,6 @@ int parse_todo_item_at_path (const char *path, todo_item_t *item_out)
     return 0;
 }
 
-void todo_item_get_path (todo_list_t *list, todo_item_t item, char *out_path, size_t out_path_len)
-{
-    snprintf (out_path, out_path_len, "%s/%lu", list->store_path, item.id);
-}
-
 void todo_list_get_path (todo_list_t *list, char *out_path, size_t out_path_len)
 {
     char *list_name_chr = (char *) XmStringUnparse (list->list_name,
@@ -139,6 +159,13 @@ void todo_list_get_path (todo_list_t *list, char *out_path, size_t out_path_len)
                                              NULL, 0, XmOUTPUT_ALL);
 
     snprintf (out_path, out_path_len, "%s/%lu %s", g_app_state.store_path, list->id, list_name_chr);
+}
+
+void todo_item_get_path (todo_list_t *list, todo_item_t item, char *out_path, size_t out_path_len)
+{
+    char store_path[MAX_PATH_LEN];
+    todo_list_get_path (list, store_path, MAX_PATH_LEN);
+    snprintf (out_path, out_path_len, "%s/%lu", store_path, item.id);
 }
 
 int write_todo_item_to_store (todo_list_t *list, todo_item_t item)
@@ -163,22 +190,81 @@ int write_todo_item_to_store (todo_list_t *list, todo_item_t item)
 
 todo_list_t create_todo_list (XmString name)
 {
-    unsigned id = g_app_state.num_todo_lists;
+    unsigned id = ++g_app_state.last_todo_list_id;
 
     todo_list_t list = { 0 };
     list.id = id;
-    list.list_name = name;
-    todo_list_get_path (&list, list.store_path, MAX_PATH_LEN);
-    mkdir (list.store_path, S_IRWXU);
+    list.list_name = XmStringCopy (name);
+
+    char store_path[MAX_PATH_LEN];
+    todo_list_get_path (&list, store_path, MAX_PATH_LEN);
+    mkdir (store_path, S_IRWXU);
 
     return list;
 }
 
+void delete_todo_list (todo_list_t *list)
+{
+    char filepath[MAX_PATH_LEN];
+    todo_list_get_path (list, filepath, MAX_PATH_LEN);
+
+    // Delete all sub items
+    DIR *dir = opendir (filepath);
+    struct dirent *entry = NULL;
+    char subitem_path[MAX_PATH_LEN];
+    while ( (entry = readdir (dir)) != NULL ) {
+        if (entry->d_name[0] == '.') continue;
+        snprintf (subitem_path, MAX_PATH_LEN, "%s/%s", filepath, entry->d_name);
+        unlink (subitem_path);
+    }
+
+    rmdir (filepath);
+
+    XtUnmanageChild (list->tab_button);
+    XtUnmanageChild (list->list_widget);
+
+    for (unsigned int i = 0; i < g_app_state.num_todo_lists; i++) {
+        if (g_app_state.todo_lists[i].id == list->id) {
+            // Move up
+            for (unsigned int j = i; j < g_app_state.num_todo_lists - 1; j++) {
+                g_app_state.todo_lists[j] = g_app_state.todo_lists[j + 1];
+            }
+
+            break;
+        }
+    }
+
+    g_app_state.num_todo_lists -= 1;
+
+    // Set the current page to the last page
+    unsigned int last_page = 0;
+    XtVaGetValues (g_app_state.todo_lists[g_app_state.num_todo_lists - 1].tab_button, XmNpageNumber, &last_page, NULL);
+    XtVaSetValues (g_app_state.notebook, XmNcurrentPageNumber, last_page, NULL);
+}
+
+void rename_todo_list (todo_list_t *list, XmString new_name)
+{
+    char from_filepath[MAX_PATH_LEN];
+    todo_list_get_path (list, from_filepath, MAX_PATH_LEN);
+
+    XmStringFree (list->list_name);
+    list->list_name = XmStringCopy (new_name);
+    XtVaSetValues (list->tab_button, XmNlabelString, new_name, NULL);
+
+    char to_filepath[MAX_PATH_LEN];
+    todo_list_get_path (list, to_filepath, MAX_PATH_LEN);
+
+    rename (from_filepath, to_filepath);
+}
+
 void reload_todos_for_list (todo_list_t *list)
 {
-    DIR *store = opendir (list->store_path);
+    char store_path[MAX_PATH_LEN];
+    todo_list_get_path (list, store_path, MAX_PATH_LEN);
+
+    DIR *store = opendir (store_path);
     if (!store) {
-        fprintf (stderr, "could not open store path at %s\n", list->store_path);
+        fprintf (stderr, "could not open store path at %s\n", store_path);
         exit (1);
     }
 
@@ -188,7 +274,7 @@ void reload_todos_for_list (todo_list_t *list)
     struct dirent *entry = NULL;
     while ( (entry = readdir (store)) != NULL ) {
         if (entry->d_name[0] == '.') continue;
-        snprintf (item_path, MAX_PATH_LEN, "%s/%s", list->store_path, entry->d_name);
+        snprintf (item_path, MAX_PATH_LEN, "%s/%s", store_path, entry->d_name);
 
         result = parse_todo_item_at_path (item_path, &item);
         if (result == 0) {
@@ -214,22 +300,41 @@ void reload_todo_lists ()
         exit (1);
     }
 
-    todo_list_t list = { 0 };
+    char filename[MAX_PATH_LEN];
     struct dirent *entry = NULL;
+    unsigned int num_todos_to_add = 0;
+    todo_list_t sorted_lists[MAX_TODOS] = { { 0 } };
     while ( (entry = readdir (list_store)) != NULL ) {
         if (entry->d_name[0] == '.') continue;
 
-        snprintf (list.store_path, MAX_PATH_LEN, "%s/%s", g_app_state.store_path, entry->d_name);
+        strncpy (filename, entry->d_name, MAX_PATH_LEN);
 
-        // Parse name
         char *num = strtok (entry->d_name, " ");
-        list.id = strtoul (num, NULL, 10);
+        unsigned long id = strtoul (num, NULL, 10);
 
-        char *name = strtok (NULL, " ");
-        list.list_name = XmStringCreateSimple (name);
+        if (id > g_app_state.last_todo_list_id) {
+            g_app_state.last_todo_list_id = id;
+        }
 
-        add_todo_list (list);
+        char *name = strtok (NULL, "\0");
+
+        todo_list_t *list = &sorted_lists[id]; // should be guaranteed to be unique
+        list->id = id;
+        list->list_name = XmStringCreateSimple (name);
+        num_todos_to_add++;
     }
+
+    unsigned int i = 0;
+    while (num_todos_to_add > 0 && i < MAX_TODOS) {
+        if (sorted_lists[i].list_name == NULL) {
+            i++; continue;
+        }
+
+        add_todo_list (sorted_lists[i]);
+
+        i++; num_todos_to_add--;
+    }
+
 
     // If there are no todo lists in the store, create the default one
     if (g_app_state.num_todo_lists == 0) {
@@ -348,6 +453,7 @@ int main (int argc, char *argv[])
     /* Menu bar */
     Widget menubar = XmVaCreateSimpleMenuBar (root, "menubar",
         XmVaCASCADEBUTTON, XmStringCreateSimple("File"), 'F',
+        XmVaCASCADEBUTTON, XmStringCreateSimple ("List"), 'L',
         NULL
     );
 
@@ -357,6 +463,12 @@ int main (int argc, char *argv[])
         XmVaPUSHBUTTON, XmStringCreateSimple ("Clear Completed"), 'C', "Ctrl<Key>X", XmStringCreateSimple ("Ctrl+X"),
         XmVaSEPARATOR,
         XmVaPUSHBUTTON, XmStringCreateSimple ("Quit"), 'Q', "Ctrl<Key>Q", XmStringCreateSimple ("Ctrl+Q"),
+        NULL);
+
+    XmVaCreateSimplePulldownMenu (menubar, "lists_menu", 1, list_menu_callback,
+        XmVaPUSHBUTTON, XmStringCreateSimple ("Create List..."), 'C', NULL, NULL,
+        XmVaPUSHBUTTON, XmStringCreateSimple ("Delete List..."), 'D', NULL, NULL,
+        XmVaPUSHBUTTON, XmStringCreateSimple ("Rename List..."), 'R', NULL, NULL,
         NULL);
 
     XtManageChild (menubar);
@@ -406,15 +518,65 @@ int main (int argc, char *argv[])
     return 0;
 }
 
-void file_menu_callback(Widget w, XtPointer client_data, XtPointer call_data)
+Widget show_textfield_dialog (XmString title, XmString prompt, XtCallbackProc ok_callback)
 {
-    (void) w;
-    (void) call_data;
+    Arg args[] = {
+        { XmNselectionLabelString, (XtArgVal) prompt },
+        { XmNdialogTitle, (XtArgVal) title }
+    };
 
+    Widget dialog = XmCreatePromptDialog (g_app_state.root_widget, "dialog", args, 2);
+
+    // Done callback
+    XtAddCallback (dialog, XmNokCallback, ok_callback, NULL);
+
+    // Delete "Help" button
+    XtUnmanageChild (XmSelectionBoxGetChild (dialog, XmDIALOG_HELP_BUTTON));
+
+    XtManageChild (dialog);
+    XtPopup (XtParent (dialog), XtGrabNone);
+
+    return dialog;
+}
+
+void show_delete_list_dialog ()
+{
+    Arg args[] = {
+        { XmNdialogTitle, (XtArgVal) XmStringCreateSimple ("Delete List") },
+        { XmNmessageString, (XtArgVal) XmStringCreateSimple ("Are you sure?") },
+    };
+
+    Widget dialog = XmCreateMessageDialog (g_app_state.root_widget, "dialog", args, 2);
+
+    // Done callback
+    XtAddCallback (dialog, XmNokCallback, delete_list_completion, NULL);
+
+    // Remove help button
+    XtUnmanageChild (XmMessageBoxGetChild (dialog, XmDIALOG_HELP_BUTTON));
+
+    XtManageChild (dialog);
+    XtPopup (XtParent (dialog), XtGrabNone);
+}
+
+void show_rename_dialog ()
+{
+    XmString title = XmStringCreateSimple ("Rename List");
+    XmString prompt = XmStringCreateSimple ("List Name: ");
+    Widget dialog = show_textfield_dialog (title, prompt, rename_list_completion);
+    XtVaSetValues (dialog, XmNtextString, g_app_state.selected_list->list_name, NULL);
+
+    XmStringFree (title);
+    XmStringFree (prompt);
+}
+
+void file_menu_callback(__unused Widget w,
+                        XtPointer client_data,
+                        __unused XtPointer call_data)
+{
     unsigned long selected_item = (unsigned long) client_data;
-    if (selected_item == 0) {
+    if (selected_item == FILE_MENU_ADD_ITEM) {
         add_menu_callback (w, client_data, call_data);
-    } else if (selected_item == 1) {
+    } else if (selected_item == FILE_MENU_CLEAR_COMPLETED) {
         clear_completed (g_app_state.selected_list);
     } else {
         // Quit
@@ -422,26 +584,21 @@ void file_menu_callback(Widget w, XtPointer client_data, XtPointer call_data)
     }
 }
 
-void add_menu_callback (Widget w, XtPointer client_data, XtPointer call_data)
+void add_menu_callback (__unused Widget w,
+                        __unused XtPointer client_data,
+                        __unused XtPointer call_data)
 {
-    XmString selection_label_str = XmStringCreateSimple ("Item Name:");
-    Arg args[] = {
-        { XmNselectionLabelString, (XtArgVal) selection_label_str }
-    };
-    Widget dialog = XmCreatePromptDialog (g_app_state.root_widget, "Add Item", args, 1);
+    XmString title = XmStringCreateSimple ("Add Item");
+    XmString prompt = XmStringCreateSimple ("Item Name: ");
+    show_textfield_dialog (title, prompt, add_menu_completion);
 
-    // Done callback
-    XtAddCallback (dialog, XmNokCallback, add_menu_completion, w);
-
-    // Delete "Help" button
-    XtUnmanageChild (XmSelectionBoxGetChild (dialog, XmDIALOG_HELP_BUTTON));
-
-    XtManageChild (dialog);
-    XtPopup (XtParent (dialog), XtGrabNone);
-    XmStringFree (selection_label_str);
+    XmStringFree (title);
+    XmStringFree (prompt);
 }
 
-void add_menu_completion (Widget w, XtPointer client_data, XtPointer call_data)
+void add_menu_completion (__unused Widget w,
+                          __unused XtPointer client_data,
+                          XtPointer call_data)
 {
     XmSelectionBoxCallbackStruct *cbs = (XmSelectionBoxCallbackStruct *) call_data;
 
@@ -463,7 +620,9 @@ void add_menu_completion (Widget w, XtPointer client_data, XtPointer call_data)
     }
 }
 
-void toggle_item_callback (Widget w, XtPointer client_data, XtPointer call_data)
+void toggle_item_callback (Widget w,
+                           __unused XtPointer client_data,
+                           XtPointer call_data)
 {
     unsigned long item_id;
     XtVaGetValues (w, XmNuserData, &item_id, NULL);
@@ -485,12 +644,78 @@ void toggle_item_callback (Widget w, XtPointer client_data, XtPointer call_data)
     }
 }
 
-void notebook_page_changed_callback (Widget w, XtPointer client_data, XtPointer call_data)
+void notebook_page_changed_callback (__unused Widget w,
+                                     __unused XtPointer client_data,
+                                     XtPointer call_data)
 {
     XmNotebookCallbackStruct *cbs = (XmNotebookCallbackStruct *) call_data;
 
     // 1 indexed
-    unsigned selected_list_idx = cbs->page_number - 1;
-    g_app_state.selected_list = &g_app_state.todo_lists[selected_list_idx];
+    unsigned todo_list_idx = 0;
+    unsigned selected_list_idx = cbs->page_number;
+    for (unsigned int i = 0; i < g_app_state.num_todo_lists; i++) {
+        unsigned page_idx = 0;
+        XtVaGetValues (g_app_state.todo_lists[i].tab_button, XmNpageNumber, &page_idx, NULL);
+        if (page_idx == selected_list_idx) {
+            todo_list_idx = i;
+            break;
+        }
+    }
+
+    g_app_state.selected_list = &g_app_state.todo_lists[todo_list_idx];
 }
 
+void list_menu_callback (Widget w, XtPointer client_data, XtPointer call_data)
+{
+    unsigned long selected_item = (unsigned long) client_data;
+    if (selected_item == LISTS_MENU_CREATE_LIST) {
+        add_list_callback (w, client_data, call_data);
+    } else if (selected_item == LISTS_MENU_DELETE_LIST) {
+        show_delete_list_dialog ();
+    } else if (selected_item == LISTS_MENU_RENAME_LIST) {
+        show_rename_dialog ();
+    }
+}
+
+void add_list_callback (__unused Widget w,
+                        __unused XtPointer client_data,
+                        __unused XtPointer call_data)
+{
+    XmString title = XmStringCreateSimple ("Add List");
+    XmString prompt = XmStringCreateSimple ("List Name: ");
+    show_textfield_dialog (title, prompt, add_list_completion);
+
+    XmStringFree (title);
+    XmStringFree (prompt);
+}
+
+void add_list_completion (__unused Widget w,
+                          __unused XtPointer client_data,
+                          XtPointer call_data)
+{
+    XmSelectionBoxCallbackStruct *cbs = (XmSelectionBoxCallbackStruct *) call_data;
+
+    XmString list_name = cbs->value;
+    todo_list_t list = create_todo_list (list_name);
+    add_todo_list (list);
+
+    // Select newly created list
+    unsigned last_page = 0;
+    XtVaGetValues (g_app_state.notebook, XmNlastPageNumber, &last_page, NULL);
+    XtVaSetValues (g_app_state.notebook, XmNcurrentPageNumber, last_page, NULL);
+}
+
+void delete_list_completion (__unused Widget w,
+                             __unused XtPointer client_data,
+                             __unused XtPointer call_data)
+{
+    delete_todo_list (g_app_state.selected_list);
+}
+
+void rename_list_completion (__unused Widget w,
+                             __unused XtPointer client_data,
+                             __unused XtPointer call_data)
+{
+    XmSelectionBoxCallbackStruct *cbs = (XmSelectionBoxCallbackStruct *) call_data;
+    rename_todo_list (g_app_state.selected_list, cbs->value);
+}
