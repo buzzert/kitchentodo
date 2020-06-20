@@ -1,9 +1,13 @@
 #include <dirent.h>
+#include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/inotify.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -12,6 +16,7 @@
 #define MAX_TODOS 128
 #define MAX_LISTS 16
 #define MAX_PATH_LEN 512
+#define FS_EVENT_BUFSIZE sizeof (struct inotify_event) + NAME_MAX + 1
 
 #define __unused __attribute__ ((unused))
 
@@ -32,9 +37,12 @@ typedef struct _todo_list_t {
     Widget        list_toggle_widgets[MAX_TODOS];
     todo_item_t   todo_items[MAX_TODOS];
     unsigned      num_todo_items;
+
+    int           watch_descriptor;
 } todo_list_t;
 
 typedef struct _app_state_t {
+    XtAppContext  app;
     Widget        root_widget;
     Widget        notebook;
 
@@ -44,6 +52,9 @@ typedef struct _app_state_t {
     unsigned long last_todo_list_id;
 
     todo_list_t  *selected_list;
+
+    pthread_t     file_watch_thread;
+    int           file_watch_inotify_fd;
 } app_state_t;
 
 static app_state_t g_app_state = { 0 };
@@ -208,6 +219,9 @@ void delete_todo_list (todo_list_t *list)
     char filepath[MAX_PATH_LEN];
     todo_list_get_path (list, filepath, MAX_PATH_LEN);
 
+    // Stop watching
+    inotify_rm_watch (g_app_state.file_watch_inotify_fd, list->watch_descriptor);
+
     // Delete all sub items
     DIR *dir = opendir (filepath);
     struct dirent *entry = NULL;
@@ -285,7 +299,25 @@ void reload_todos_for_list (todo_list_t *list)
 
             item.id = id;
 
-            add_todo (list, item);
+            // Check if todo exists first
+            todo_item_t *existing_item = NULL;
+            Widget       existing_toggle_widget = NULL;
+            for (unsigned i = 0; i < list->num_todo_items; i++) {
+                todo_item_t *item = &list->todo_items[i];
+                if (item->id == id) {
+                    existing_item = item;
+                    existing_toggle_widget = list->list_toggle_widgets[i];
+                    break;
+                }
+            }
+
+            if (existing_item != NULL) {
+                // Update item checkbox state
+                existing_item->complete = item.complete;
+                XtVaSetValues (existing_toggle_widget, XmNset, item.complete, NULL);
+            } else {
+                add_todo (list, item);
+            }
         }
     }
 
@@ -393,6 +425,16 @@ void add_todo_list (todo_list_t list)
     g_app_state.num_todo_lists++;
 
     reload_todos_for_list (&g_app_state.todo_lists[index]);
+
+    // Start watching this directory for fs events
+    char list_path[MAX_PATH_LEN];
+    todo_list_get_path (&list, list_path, MAX_PATH_LEN);
+    int result = inotify_add_watch (g_app_state.file_watch_inotify_fd, list_path, IN_MODIFY);
+    if (result == -1) {
+        fprintf (stderr, "Error watching list dir: %s\n", strerror (errno));
+    } else {
+        g_app_state.todo_lists[index].watch_descriptor = result;
+    }
 }
 
 void clear_completed (todo_list_t *list)
@@ -433,13 +475,48 @@ void clear_completed (todo_list_t *list)
     }
 }
 
+void file_watcher_callback (XtPointer user_data, __unused XtIntervalId *id)
+{
+    todo_list_t *list = (todo_list_t *)user_data;
+    reload_todos_for_list (list);
+}
+
+void* file_watcher_thread_main (__unused void *context)
+{
+    char buffer[FS_EVENT_BUFSIZE] __attribute__ ((aligned(8))) = { 0 };
+    for (;;) {
+        ssize_t result = read (g_app_state.file_watch_inotify_fd, buffer, FS_EVENT_BUFSIZE);
+        if (result <= 0) {
+            fprintf (stderr, "File watcher inotify read error, exiting (%ld)\n", result);
+            break;
+        }
+
+        struct inotify_event *event = (struct inotify_event *)buffer;
+        if (event == NULL) {
+            continue;
+        }
+
+        printf ("File: %s changed!\n", event->name);
+
+        // Locate relevant watch descriptor
+        for (unsigned int i = 0; i < g_app_state.num_todo_lists; i++) {
+            todo_list_t *list = &g_app_state.todo_lists[i];
+            if (list->watch_descriptor == event->wd) {
+                XtAppAddTimeOut (g_app_state.app, 1, file_watcher_callback, list);
+                break;
+            }
+        }
+    }
+
+    return NULL;
+}
+
 int main (int argc, char *argv[])
 {
     initialize_store_if_necessary ();
 
     /* Initialize Application */
-    XtAppContext app;
-    Widget toplevel = XtVaOpenApplication (&app, "Shopping List", NULL, 0, &argc, argv, NULL,
+    Widget toplevel = XtVaOpenApplication (&g_app_state.app, "Shopping List", NULL, 0, &argc, argv, NULL,
         sessionShellWidgetClass,
         XmNminWidth, 275,
         XmNminHeight, 325,
@@ -510,10 +587,18 @@ int main (int argc, char *argv[])
     Widget scroller = XtNameToWidget (notebook, "PageScroller");
     XtUnmanageChild (scroller);
 
+    // Set up file watcher
+    g_app_state.file_watch_inotify_fd = inotify_init ();
+    pthread_create (&g_app_state.file_watch_thread, NULL, file_watcher_thread_main, NULL);
+
     reload_todo_lists ();
 
     XtRealizeWidget (toplevel);
-    XtAppMainLoop (app);
+    XtAppMainLoop (g_app_state.app);
+
+    // Stop watching file events
+    close (g_app_state.file_watch_inotify_fd);
+    pthread_join (g_app_state.file_watch_thread, NULL);
 
     return 0;
 }
