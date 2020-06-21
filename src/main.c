@@ -314,7 +314,7 @@ void reload_todos_for_list (todo_list_t *list)
             if (existing_item != NULL) {
                 // Update item checkbox state
                 existing_item->complete = item.complete;
-                XtVaSetValues (existing_toggle_widget, XmNset, item.complete, NULL);
+                XmToggleButtonSetState (existing_toggle_widget, item.complete, false);
             } else {
                 add_todo (list, item);
             }
@@ -475,12 +475,6 @@ void clear_completed (todo_list_t *list)
     }
 }
 
-void file_watcher_callback (XtPointer user_data, __unused XtIntervalId *id)
-{
-    todo_list_t *list = (todo_list_t *)user_data;
-    reload_todos_for_list (list);
-}
-
 void* file_watcher_thread_main (__unused void *context)
 {
     char buffer[FS_EVENT_BUFSIZE] __attribute__ ((aligned(8))) = { 0 };
@@ -496,13 +490,11 @@ void* file_watcher_thread_main (__unused void *context)
             continue;
         }
 
-        printf ("File: %s changed!\n", event->name);
-
         // Locate relevant watch descriptor
         for (unsigned int i = 0; i < g_app_state.num_todo_lists; i++) {
             todo_list_t *list = &g_app_state.todo_lists[i];
             if (list->watch_descriptor == event->wd) {
-                XtAppAddTimeOut (g_app_state.app, 1, file_watcher_callback, list);
+                reload_todos_for_list (list);
                 break;
             }
         }
