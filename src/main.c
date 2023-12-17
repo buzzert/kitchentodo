@@ -224,19 +224,26 @@ void delete_todo_list (todo_list_t *list)
 
     // Delete all sub items
     DIR *dir = opendir (filepath);
-    struct dirent *entry = NULL;
-    char subitem_path[MAX_PATH_LEN];
-    while ( (entry = readdir (dir)) != NULL ) {
-        if (entry->d_name[0] == '.') continue;
-        snprintf (subitem_path, MAX_PATH_LEN, "%s/%s", filepath, entry->d_name);
-        unlink (subitem_path);
+    if (dir) {
+        struct dirent *entry = NULL;
+        char subitem_path[MAX_PATH_LEN];
+        while ( (entry = readdir (dir)) != NULL ) {
+            if (entry->d_name[0] == '.') continue;
+            snprintf (subitem_path, MAX_PATH_LEN, "%s/%s", filepath, entry->d_name);
+            unlink (subitem_path);
+        }
+
+        rmdir (filepath);
+    } else { 
+        fprintf (stderr, "List does not exist\n");
+	return;
     }
 
-    rmdir (filepath);
-
+    // Remove widgets
     XtUnmanageChild (list->tab_button);
     XtUnmanageChild (list->list_widget);
 
+    bool found_list = false;
     for (unsigned int i = 0; i < g_app_state.num_todo_lists; i++) {
         if (g_app_state.todo_lists[i].id == list->id) {
             // Move up
@@ -244,16 +251,19 @@ void delete_todo_list (todo_list_t *list)
                 g_app_state.todo_lists[j] = g_app_state.todo_lists[j + 1];
             }
 
+	    found_list = true;
             break;
         }
     }
 
-    g_app_state.num_todo_lists -= 1;
+    if (found_list) {
+        g_app_state.num_todo_lists -= 1;
 
-    // Set the current page to the last page
-    unsigned int last_page = 0;
-    XtVaGetValues (g_app_state.todo_lists[g_app_state.num_todo_lists - 1].tab_button, XmNpageNumber, &last_page, NULL);
-    XtVaSetValues (g_app_state.notebook, XmNcurrentPageNumber, last_page, NULL);
+        // Set the current page to the last page
+        unsigned int last_page = 0;
+        XtVaGetValues (g_app_state.todo_lists[g_app_state.num_todo_lists - 1].tab_button, XmNpageNumber, &last_page, NULL);
+        XtVaSetValues (g_app_state.notebook, XmNcurrentPageNumber, last_page, NULL);
+    }
 }
 
 void rename_todo_list (todo_list_t *list, XmString new_name)
@@ -475,6 +485,18 @@ void clear_completed (todo_list_t *list)
     }
 }
 
+void list_reload_watcher_callback (XtPointer user_data, __unused XtIntervalId *id)
+{
+    todo_list_t *list = (todo_list_t *)user_data;
+    reload_todos_for_list (list);
+}
+
+void list_delete_watcher_callback (XtPointer user_data, __unused XtIntervalId *id)
+{
+    todo_list_t *list = (todo_list_t *)user_data;
+
+}
+
 void* file_watcher_thread_main (__unused void *context)
 {
     char buffer[FS_EVENT_BUFSIZE] __attribute__ ((aligned(8))) = { 0 };
@@ -491,13 +513,27 @@ void* file_watcher_thread_main (__unused void *context)
         }
 
         // Locate relevant watch descriptor
+	todo_list_t *watched_list = NULL;
         for (unsigned int i = 0; i < g_app_state.num_todo_lists; i++) {
             todo_list_t *list = &g_app_state.todo_lists[i];
             if (list->watch_descriptor == event->wd) {
-                reload_todos_for_list (list);
+		watched_list = list;
                 break;
             }
         }
+
+	// Call the relevant callback 
+	if (watched_list) {
+	    XtTimerCallbackProc callback = list_reload_watcher_callback;
+
+	    // IN_IGNORED: the watch was automatically removed because the file was deleted, 
+	    // or its filesystem was unmounted
+	    if (event->mask & IN_IGNORED) {
+	        callback = list_delete_watcher_callback;
+	    }
+
+	    XtAppAddTimeOut (g_app_state.app, 1, callback, watched_list);
+	}
     }
 
     return NULL;
